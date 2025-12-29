@@ -1,0 +1,103 @@
+# ============================================
+# Archivos de música (MUY IMPORTANTE)
+# ============================================
+music/
+downloads/
+*.mp3
+*.m4a
+*.mp4
+*.wav
+*.flac
+*.aac
+
+# ============================================
+# Credenciales y tokens (CRÍTICO)
+# ============================================
+.env
+.cache
+.cache-*
+.spotify_caches/
+*.pem
+*.key
+
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ============================================
+# Entornos virtuales
+# ============================================
+venv/
+ENV/
+env/
+.venv
+virtualenv/
+
+# ============================================
+# IDEs y editores
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================================
+# Logs y bases de datos
+# ============================================
+*.log
+*.sql
+*.sqlite
+*.db
+
+# ============================================
+# Archivos temporales
+# ============================================
+temp/
+tmp/
+*.tmp
+temp_download/
+
+# ============================================
+# Sistema operativo
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# ============================================
+# Otros
+# ============================================
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
