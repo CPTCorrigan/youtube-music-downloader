@@ -7,8 +7,10 @@ import os
 import re
 import time
 import random
+import json
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
+from datetime import datetime
 import yt_dlp
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, TIT2, TPE1, APIC
@@ -36,6 +38,23 @@ class YouTubeAudioDownloader:
         self.min_delay = min_delay
         self.max_delay = max_delay
         
+        # Archivos de datos
+        self.data_dir = Path("data")
+        self.data_dir.mkdir(exist_ok=True)
+        self.blacklist_file = self.data_dir / "blacklist.json"
+        self.download_history_file = self.data_dir / "download_history.json"
+        
+        # Cargar listas
+        self.blacklist = self._load_blacklist()
+        self.download_history = self._load_download_history()
+        
+        # Estadísticas de descarga
+        self.download_stats = {
+            'bytes_downloaded': 0,
+            'start_time': None,
+            'failed_songs': []
+        }
+        
         # Palabras clave a evitar en los resultados
         self.blacklist = [
             'remix', 'mix', 'mashup', 'cover', 'karaoke',
@@ -45,7 +64,7 @@ class YouTubeAudioDownloader:
             'nightcore', 'bass boosted', 'extended', 'hour'
         ]
         
-        # Configuración de yt-dlp
+        # Configuración de yt-dlp con hook para velocidad
         self.ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -61,7 +80,106 @@ class YouTubeAudioDownloader:
             'ignoreerrors': True,
             'geo_bypass': True,
             'age_limit': None,
+            'progress_hooks': [self._download_progress_hook],
         }
+    
+    def _download_progress_hook(self, d):
+        """Hook para capturar estadísticas de descarga"""
+        if d['status'] == 'downloading':
+            if 'downloaded_bytes' in d:
+                self.download_stats['bytes_downloaded'] = d['downloaded_bytes']
+    
+    def _load_blacklist(self) -> Dict:
+        """Carga la lista negra de canciones fallidas"""
+        if self.blacklist_file.exists():
+            try:
+                with open(self.blacklist_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+    
+    def _save_blacklist(self):
+        """Guarda la lista negra"""
+        with open(self.blacklist_file, 'w', encoding='utf-8') as f:
+            json.dump(self.blacklist, f, indent=2, ensure_ascii=False)
+    
+    def _load_download_history(self) -> Dict:
+        """Carga el historial de descargas por playlist"""
+        if self.download_history_file.exists():
+            try:
+                with open(self.download_history_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+    
+    def _save_download_history(self):
+        """Guarda el historial de descargas"""
+        with open(self.download_history_file, 'w', encoding='utf-8') as f:
+            json.dump(self.download_history, f, indent=2, ensure_ascii=False)
+    
+    def _add_to_blacklist(self, artist: str, song: str, reason: str):
+        """Agrega una canción a la lista negra después de 3 intentos"""
+        key = f"{artist} - {song}"
+        
+        if key not in self.blacklist:
+            self.blacklist[key] = {
+                'artist': artist,
+                'song': song,
+                'attempts': 1,
+                'last_error': reason,
+                'last_attempt': datetime.now().isoformat()
+            }
+        else:
+            self.blacklist[key]['attempts'] += 1
+            self.blacklist[key]['last_error'] = reason
+            self.blacklist[key]['last_attempt'] = datetime.now().isoformat()
+        
+        # Si llega a 3 intentos, marcar como bloqueada
+        if self.blacklist[key]['attempts'] >= 3:
+            self.blacklist[key]['blacklisted'] = True
+            print(f"  ⛔ Canción agregada a lista negra después de 3 intentos fallidos")
+        
+        self._save_blacklist()
+    
+    def _is_blacklisted(self, artist: str, song: str) -> bool:
+        """Verifica si una canción está en la lista negra"""
+        key = f"{artist} - {song}"
+        return key in self.blacklist and self.blacklist[key].get('blacklisted', False)
+    
+    def _update_download_history(self, playlist_id: str, track_ids: List[str]):
+        """Actualiza el historial de una playlist"""
+        self.download_history[playlist_id] = {
+            'track_ids': track_ids,
+            'last_update': datetime.now().isoformat(),
+            'total_tracks': len(track_ids)
+        }
+        self._save_download_history()
+    
+    def _get_new_tracks(self, playlist_id: str, current_tracks: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
+        """Obtiene solo las canciones nuevas de una playlist"""
+        if playlist_id not in self.download_history:
+            # Primera vez, todas son nuevas
+            return current_tracks
+        
+        old_track_ids = set(self.download_history[playlist_id]['track_ids'])
+        new_tracks = [
+            (track_id, artist, song) 
+            for track_id, artist, song in current_tracks 
+            if track_id not in old_track_ids
+        ]
+        
+        return new_tracks
+    
+    def get_download_speed(self) -> str:
+        """Calcula la velocidad de descarga"""
+        if self.download_stats['start_time'] and self.download_stats['bytes_downloaded'] > 0:
+            elapsed = time.time() - self.download_stats['start_time']
+            if elapsed > 0:
+                speed_mbps = (self.download_stats['bytes_downloaded'] / 1024 / 1024) / elapsed
+                return f"{speed_mbps:.2f} MB/s"
+        return "Calculando..."
     
     def _human_delay(self):
         """
@@ -351,17 +469,22 @@ class YouTubeAudioDownloader:
         except Exception as e:
             print(f"  ⚠️  No se pudieron agregar metadatos: {e}")
     
-    def download_song(self, artist: str, song: str) -> Tuple[bool, str]:
+    def download_song(self, artist: str, song: str, track_id: str = None) -> Tuple[bool, str]:
         """
         Descarga una canción específica
         
         Args:
             artist: Nombre del artista
             song: Título de la canción
+            track_id: ID de Spotify (opcional, para tracking)
             
         Returns:
             Tupla (éxito, mensaje)
         """
+        # Verificar lista negra
+        if self._is_blacklisted(artist, song):
+            return False, "En lista negra (3+ intentos fallidos)"
+        
         # Crear carpeta del artista
         artist_normalized = self._normalize_artist(artist)
         artist_dir = self.output_dir / artist_normalized
@@ -382,16 +505,33 @@ class YouTubeAudioDownloader:
         video_info = self._search_youtube(query)
         
         if not video_info:
-            return False, "No encontrado"
+            reason = "No encontrado en YouTube"
+            self._add_to_blacklist(artist, song, reason)
+            self.download_stats['failed_songs'].append({
+                'artist': artist,
+                'song': song,
+                'reason': reason
+            })
+            return False, reason
         
         print(f"  📹 Encontrado: {video_info['title'][:60]}...")
         
         # Descargar audio
         print(f"  ⬇️  Descargando...")
+        self.download_stats['start_time'] = time.time()
+        self.download_stats['bytes_downloaded'] = 0
+        
         success = self._download_audio(video_info, output_path)
         
         if not success:
-            return False, "Error en descarga"
+            reason = "Error en descarga (archivo corrupto o bloqueado)"
+            self._add_to_blacklist(artist, song, reason)
+            self.download_stats['failed_songs'].append({
+                'artist': artist,
+                'song': song,
+                'reason': reason
+            })
+            return False, reason
         
         # Agregar metadatos
         print(f"  🏷️  Agregando metadatos...")
@@ -447,12 +587,25 @@ class YouTubeAudioDownloader:
         
         # Resumen final
         successful = sum(1 for r in results.values() if r['success'])
+        failed = sum(1 for r in results.values() if not r['success'] and r['message'] != "Ya existe")
+        
         print("=" * 60)
         print("✨ DESCARGA COMPLETADA")
         print("=" * 60)
         print(f"✅ Exitosas: {successful}/{len(songs)}")
         print(f"❌ Fallidas: {len(songs) - successful}/{len(songs)}")
-        print(f"📁 Ubicación: {self.output_dir.absolute()}\n")
+        print(f"📁 Ubicación: {self.output_dir.absolute()}")
+        
+        # Mostrar canciones fallidas
+        if self.download_stats['failed_songs']:
+            print(f"\n{'=' * 60}")
+            print("❌ CANCIONES FALLIDAS")
+            print(f"{'=' * 60}")
+            for i, failed_song in enumerate(self.download_stats['failed_songs'], 1):
+                print(f"\n{i}. {failed_song['artist']} - {failed_song['song']}")
+                print(f"   Motivo: {failed_song['reason']}")
+        
+        print()
         
         return results
 
@@ -495,7 +648,7 @@ if __name__ == "__main__":
     # Lista de ejemplo
     example_songs = [
         ("Daft Punk", "Get Lucky"),
-        ("The Weeknd", "Blinding Lights Speedup"),
+        ("The Weeknd", "Blinding Lights"),
         ("Billie Eilish", "Bad Guy"),
         ("Arctic Monkeys", "Do I Wanna Know"),
         ("Tame Impala", "The Less I Know The Better")
